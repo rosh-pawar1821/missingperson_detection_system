@@ -1,0 +1,42 @@
+# Virtual environment
+env/
+
+# App-specific folders
+missingpersondetectionapp/dataset/
+missingpersondetectionapp/haarcascade_classifier/
+
+# Model / data files
+*.h5
+*.pkl
+*.npy
+*.mp4
+*.jpg
+*.png
+*.dll
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Database
+*.sqlite3
+
+# Django media & static
+missingpersondetectionapp/media/
+staticfiles/
+
+# Environment / secret files
+.env
+*.local
+*.secret
+
+# IDE files
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
