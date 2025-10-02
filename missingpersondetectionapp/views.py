@@ -5,6 +5,8 @@ import joblib
 import pickle
 import numpy as np
 from PIL import Image
+from mtcnn import MTCNN
+from keras_facenet import FaceNet
 from django.shortcuts import render, redirect
 from django.contrib import messages
 from rest_framework import status
@@ -31,15 +33,26 @@ known_embeddings = np.load(os.path.join(MODEL_DIR, "face_embeddings.npy"))
 known_labels = np.load(os.path.join(MODEL_DIR, "face_labels.npy"))
 
 
-def get_face_detector_and_embedder():
-    """
-    Lazy load MTCNN detector and FaceNet embedder """
-    from mtcnn import MTCNN
-    from keras_facenet import FaceNet
+detector = None
+embedder = None
+model = None
+label_encoder = None
 
-    embedder = FaceNet()
-    detector = MTCNN()
-    return detector, embedder
+def get_face_detector_and_embedder():
+    global detector, embedder, model, label_encoder
+    if detector is None or embedder is None:
+        detector = MTCNN()
+        embedder = FaceNet()
+        print("Detector and embedder loaded.")
+
+    if model is None or label_encoder is None:
+        with open("face_detection_model.pkl", "rb") as f:
+            model = pickle.load(f)
+        with open("label_encoder.pkl", "rb") as f:
+            label_encoder = pickle.load(f)
+        print("Trained model and label encoder loaded.")
+
+    return detector, embedder, model, label_encoder
 
 def get_embedding(face_img, embedder):
     """
@@ -61,27 +74,19 @@ def save_video_temporarily(video_file):
             destination.write(chunk)
     return temp_path
 
-
-def extract_and_process_faces(video_path, missing_person_name, output_dir="processed_frames", max_frames_to_process=50):
+def extract_and_process_faces(video_path, missing_person_name, frame_skip=10):
     """
-    Extract frames from video, detect missing person, draw bounding boxes,
-    and save processed frames.
+    Extract frames from video and detect missing person.
     """
-    detector, embedder = get_face_detector_and_embedder()  # Lazy load
+    detector, embedder, model, label_encoder = get_face_detector_and_embedder()
     cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    frame_skip = max(1, total_frames // max_frames_to_process)
-    os.makedirs(output_dir, exist_ok=True)
     frame_number = 0
-    processed_count = 0
     found_frames = []
-    saved_frames = []
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
-
         if frame_number % frame_skip == 0:
             results = detector.detect_faces(frame)
             for r in results:
@@ -89,28 +94,19 @@ def extract_and_process_faces(video_path, missing_person_name, output_dir="proce
                 x, y = abs(x), abs(y)
                 face = frame[y:y+h, x:x+w]
 
-                embedding = get_embedding(face, embedder).reshape(1, -1)
+                embedding = embedder.embeddings([face])[0].reshape(1, -1)
                 pred = model.predict(embedding)
                 detected_name = label_encoder.inverse_transform(pred)[0]
-                color = (0, 255, 0) if detected_name == missing_person_name else (0, 0, 255)
-                cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
-                cv2.putText(frame, detected_name, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
                 if detected_name == missing_person_name:
                     found_frames.append(frame_number)
                     print(f"FOUND {missing_person_name} at frame {frame_number}!")
-            frame_path = os.path.join(output_dir, f"{missing_person_name}_frame_{processed_count}.jpg")
-            cv2.imwrite(frame_path, frame)
-            saved_frames.append(frame_path)
-            processed_count += 1
         frame_number += 1
     cap.release()
-
     return {
         'found': len(found_frames) > 0,
         'frames': found_frames,
-        'total_frames_processed': processed_count,
-        'saved_frame_paths': saved_frames
+        'total_frames_processed': frame_number
     }
 
 def cleanup_temp_file(file_path):
@@ -152,11 +148,10 @@ def upload_missing_person(request):
     except Exception as e:
         return Response({'error': f'Error uploading missing person: {str(e)}'},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 @api_view(['POST'])
 def detect_in_video(request):
     """
-    Detect missing person in uploaded video.
+    Detect missing person in uploaded video
     """
     try:
         if 'video' not in request.FILES:
@@ -170,11 +165,15 @@ def detect_in_video(request):
         missing_person_name = request.data.get('missing_person_name')
         if not missing_person_name:
             return Response({'error': 'Missing person name is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(video_file.name)[1]) as temp_file:
+            for chunk in video_file.chunks():
+                temp_file.write(chunk)
+            temp_video_path = temp_file.name
 
-        temp_video_path = save_video_temporarily(video_file)
         try:
-            detection_results = extract_and_process_faces(temp_video_path, missing_person_name)
-
+            detection_results = extract_and_process_faces(temp_video_path, missing_person_name, frame_skip=10)
+            from .models import Detectionmodelresult
             detection_record = Detectionmodelresult.objects.create(
                 video_filename=video_file.name,
                 missing_person_name=missing_person_name,
@@ -192,7 +191,9 @@ def detect_in_video(request):
                 'total_frames_processed': detection_results['total_frames_processed']
             }, status=status.HTTP_200_OK)
         finally:
-            cleanup_temp_file(temp_video_path)
+            if os.path.exists(temp_video_path):
+                os.remove(temp_video_path)
+
     except Exception as e:
         return Response({'error': f'Error processing video: {str(e)}'},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR)
