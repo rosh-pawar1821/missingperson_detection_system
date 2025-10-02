@@ -61,14 +61,21 @@ def save_video_temporarily(video_file):
             destination.write(chunk)
     return temp_path
 
-def extract_and_process_faces(video_path, missing_person_name, frame_skip=10):
+
+def extract_and_process_faces(video_path, missing_person_name, output_dir="processed_frames", max_frames_to_process=50):
     """
-    Extract frames from video and detect missing person.
+    Extract frames from video, detect missing person, draw bounding boxes,
+    and save processed frames.
     """
-    detector, embedder = get_face_detector_and_embedder()  # Lazy load here
+    detector, embedder = get_face_detector_and_embedder()  # Lazy load
     cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_skip = max(1, total_frames // max_frames_to_process)
+    os.makedirs(output_dir, exist_ok=True)
     frame_number = 0
+    processed_count = 0
     found_frames = []
+    saved_frames = []
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -85,18 +92,25 @@ def extract_and_process_faces(video_path, missing_person_name, frame_skip=10):
                 embedding = get_embedding(face, embedder).reshape(1, -1)
                 pred = model.predict(embedding)
                 detected_name = label_encoder.inverse_transform(pred)[0]
+                color = (0, 255, 0) if detected_name == missing_person_name else (0, 0, 255)
+                cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+                cv2.putText(frame, detected_name, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
                 if detected_name == missing_person_name:
                     found_frames.append(frame_number)
                     print(f"FOUND {missing_person_name} at frame {frame_number}!")
-
+            frame_path = os.path.join(output_dir, f"{missing_person_name}_frame_{processed_count}.jpg")
+            cv2.imwrite(frame_path, frame)
+            saved_frames.append(frame_path)
+            processed_count += 1
         frame_number += 1
-
     cap.release()
+
     return {
         'found': len(found_frames) > 0,
         'frames': found_frames,
-        'total_frames_processed': frame_number
+        'total_frames_processed': processed_count,
+        'saved_frame_paths': saved_frames
     }
 
 def cleanup_temp_file(file_path):
