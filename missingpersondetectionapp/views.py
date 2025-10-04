@@ -2,7 +2,6 @@ import os
 import cv2
 import tempfile
 import pickle
-import joblib
 import numpy as np
 from mtcnn import MTCNN
 from keras_facenet import FaceNet
@@ -14,70 +13,41 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from .models import Missingperson, Detectionmodelresult
 from .serializers import MissingPersonSerializer, DetectionResultSerializer
-import logging
 
-logger = logging.getLogger(__name__)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(BASE_DIR, "model")
-MODEL_PATH = os.path.join(MODEL_DIR, "face_detection_model.pkl")
-LABEL_ENCODER_PATH = os.path.join(MODEL_DIR, "label_encoder.pkl")
-
+detector = None
+embedder = None
+model = None
+label_encoder = None
 
 def get_face_detector_and_embedder():
     global detector, embedder, model, label_encoder
-    if detector is None or embedder is None:
+    if detector is None:
         detector = MTCNN()
+        print("MTCNN detector loaded.")
+
+    if embedder is None:
         embedder = FaceNet()
-        print("Detector and embedder loaded.")
+        print("FaceNet embedder loaded.")
 
     if model is None or label_encoder is None:
-        if os.path.exists(MODEL_PATH):
-            try:
-                model = joblib.load(MODEL_PATH)
-                print(f"Model loaded from {MODEL_PATH}")
-            except Exception as e:
-                print(f"Error loading model: {e}")
-                raise RuntimeError(f"Failed to load model: {e}")
-        else:
-            raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
-
-        if os.path.exists(LABEL_ENCODER_PATH):
-            try:
-                with open(LABEL_ENCODER_PATH, "rb") as f:
-                    label_encoder = pickle.load(f)
-                print(f"Label encoder loaded from {LABEL_ENCODER_PATH}")
-            except Exception as e:
-                print(f"Error loading label encoder: {e}")
-                raise RuntimeError(f"Failed to load label encoder: {e}")
-        else:
-            raise FileNotFoundError(f"Label encoder file not found: {LABEL_ENCODER_PATH}")
-
+        model_path = os.path.join("model", "face_detection_model.pkl")
+        label_path = os.path.join("model", "label_encoder.pkl")
+        if os.path.exists(model_path):
+            with open(model_path, "rb") as f:
+                model = pickle.load(f)
+            print("Face detection model loaded.")
+        if os.path.exists(label_path):
+            with open(label_path, "rb") as f:
+                label_encoder = pickle.load(f)
+            print("Label encoder loaded.")
     return detector, embedder, model, label_encoder
-
 
 def get_embedding(face_img, embedder):
     face_img = cv2.resize(face_img, (160, 160))
     face_img = face_img.astype('float32')
     embedding = embedder.embeddings([face_img])[0]
     return embedding
-
-def save_video_temporarily(video_file):
-    temp_dir = tempfile.mkdtemp()
-    temp_path = os.path.join(temp_dir, video_file.name)
-    with open(temp_path, "wb+") as destination:
-        for chunk in video_file.chunks():
-            destination.write(chunk)
-    return temp_path
-
-def cleanup_temp_file(file_path):
-    try:
-        os.unlink(file_path)
-        temp_dir = os.path.dirname(file_path)
-        os.rmdir(temp_dir)
-    except OSError:
-        pass
-
 
 def extract_and_process_faces(video_path, missing_person_name, frame_skip=10):
     detector, embedder, model, label_encoder = get_face_detector_and_embedder()
@@ -89,24 +59,20 @@ def extract_and_process_faces(video_path, missing_person_name, frame_skip=10):
         ret, frame = cap.read()
         if not ret:
             break
-
         if frame_number % frame_skip == 0:
             results = detector.detect_faces(frame)
             for r in results:
                 x, y, w, h = r['box']
-                x, y = max(0, x), max(0, y)
+                x, y = abs(x), abs(y)
                 face = frame[y:y+h, x:x+w]
-                if face.size == 0:
-                    continue
 
-                embedding = get_embedding(face, embedder).reshape(1, -1)
+                embedding = embedder.embeddings([face])[0].reshape(1, -1)
                 pred = model.predict(embedding)
                 detected_name = label_encoder.inverse_transform(pred)[0]
 
                 if detected_name == missing_person_name:
                     found_frames.append(frame_number)
-                    logger.info(f" FOUND {missing_person_name} at frame {frame_number}")
-
+                    print(f"FOUND {missing_person_name} at frame {frame_number}!")
         frame_number += 1
 
     cap.release()
@@ -119,9 +85,11 @@ def extract_and_process_faces(video_path, missing_person_name, frame_skip=10):
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FormParser])
 def upload_missing_person(request):
+    """Upload missing person image"""
     try:
         serializer = MissingPersonSerializer(data=request.data)
         if serializer.is_valid():
+            # Validate image file
             if request.FILES:
                 for field_name, file_obj in request.FILES.items():
                     allowed_formats = ['.jpg', '.jpeg', '.png', '.bmp']
@@ -130,38 +98,32 @@ def upload_missing_person(request):
                             {'error': f'Invalid image format for {field_name}. Supported: jpeg, jpg, png, bmp'},
                             status=status.HTTP_400_BAD_REQUEST
                         )
-                    max_size = 5 * 1024 * 1024
-                    if file_obj.size > max_size:
+                    if file_obj.size > 5*1024*1024:
                         return Response(
-                            {'error': f'Image file too large for {field_name}. Maximum size: 5MB'},
+                            {'error': f'Image too large for {field_name}. Max size: 5MB'},
                             status=status.HTTP_400_BAD_REQUEST
                         )
-
             person = serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
-
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
-        logger.error(f"Error uploading missing person: {str(e)}")
-        return Response({'error': f'Error uploading missing person: {str(e)}'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+        return Response({'error': f'Error uploading missing person: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
 def detect_in_video(request):
+    """Detect missing person in uploaded video"""
     try:
         if 'video' not in request.FILES:
             return Response({'error': 'No video file provided'}, status=status.HTTP_400_BAD_REQUEST)
-
         video_file = request.FILES['video']
         if not video_file.name.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
-            return Response({'error': 'Invalid video format. Supported: .mp4, .avi, .mov, .mkv'},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Invalid video format'}, status=status.HTTP_400_BAD_REQUEST)
 
         missing_person_name = request.data.get('missing_person_name')
         if not missing_person_name:
             return Response({'error': 'Missing person name is required'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Save video temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(video_file.name)[1]) as temp_file:
             for chunk in video_file.chunks():
                 temp_file.write(chunk)
@@ -169,7 +131,6 @@ def detect_in_video(request):
 
         try:
             detection_results = extract_and_process_faces(temp_video_path, missing_person_name, frame_skip=10)
-
             detection_record = Detectionmodelresult.objects.create(
                 video_filename=video_file.name,
                 missing_person_name=missing_person_name,
@@ -186,19 +147,16 @@ def detect_in_video(request):
                 'frames_found': detection_results['frames'],
                 'total_frames_processed': detection_results['total_frames_processed']
             }, status=status.HTTP_200_OK)
-
         finally:
             if os.path.exists(temp_video_path):
                 os.remove(temp_video_path)
 
     except Exception as e:
-        logger.error(f"Error processing video: {str(e)}")
-        return Response({'error': f'Error processing video: {str(e)}'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+        return Response({'error': f'Error processing video: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['GET'])
 def get_detection_result(request, detection_id=None):
+    """Get detection results"""
     try:
         if detection_id:
             detection = Detectionmodelresult.objects.get(id=detection_id)
@@ -243,5 +201,6 @@ def detect_video_form(request):
 def results_view(request):
     results = Detectionmodelresult.objects.all().order_by("-created_at")
     return render(request, "results.html", {"results": results})
+
 
 
