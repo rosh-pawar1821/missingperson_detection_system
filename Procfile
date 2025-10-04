@@ -1,3 +1,2 @@
-gunicorn your_project.wsgi:application --workers 1 --timeout 120
-
+web: gunicorn missingperson_detection.wsgi:application --workers 1 --threads 2 --timeout 120
 
