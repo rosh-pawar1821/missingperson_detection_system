@@ -121,7 +121,7 @@ def cleanup_temp_file(file_path):
 @parser_classes([MultiPartParser, FormParser])
 def upload_missing_person(request):
     """
-    Upload missing person image.
+    Upload missing person image
     """
     try:
         serializer = MissingPersonSerializer(data=request.data)
