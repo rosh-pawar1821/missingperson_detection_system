@@ -2,6 +2,7 @@ import os
 import cv2
 import tempfile
 import pickle
+import joblib
 import numpy as np
 from mtcnn import MTCNN
 from keras_facenet import FaceNet
@@ -17,31 +18,40 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
+MODEL_PATH = os.path.join(MODEL_DIR, "face_detection_model.pkl")
+LABEL_ENCODER_PATH = os.path.join(MODEL_DIR, "label_encoder.pkl")
 
-detector = None
-embedder = None
-model = None
-label_encoder = None
 
 def get_face_detector_and_embedder():
     global detector, embedder, model, label_encoder
     if detector is None or embedder is None:
-        # Lazy import
-        from mtcnn import MTCNN
-        from keras_facenet import FaceNet
         detector = MTCNN()
         embedder = FaceNet()
         print("Detector and embedder loaded.")
 
     if model is None or label_encoder is None:
-        import pickle
-        with open("model/face_detection_model.pkl", "rb") as f:
-            model = pickle.load(f)
-        with open("model/label_encoder.pkl", "rb") as f:
-            label_encoder = pickle.load(f)
-        print("Trained model and label encoder loaded.")
+        if os.path.exists(MODEL_PATH):
+            try:
+                model = joblib.load(MODEL_PATH)
+                print(f"Model loaded from {MODEL_PATH}")
+            except Exception as e:
+                print(f"Error loading model: {e}")
+                raise RuntimeError(f"Failed to load model: {e}")
+        else:
+            raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
+
+        if os.path.exists(LABEL_ENCODER_PATH):
+            try:
+                with open(LABEL_ENCODER_PATH, "rb") as f:
+                    label_encoder = pickle.load(f)
+                print(f"Label encoder loaded from {LABEL_ENCODER_PATH}")
+            except Exception as e:
+                print(f"Error loading label encoder: {e}")
+                raise RuntimeError(f"Failed to load label encoder: {e}")
+        else:
+            raise FileNotFoundError(f"Label encoder file not found: {LABEL_ENCODER_PATH}")
 
     return detector, embedder, model, label_encoder
 
