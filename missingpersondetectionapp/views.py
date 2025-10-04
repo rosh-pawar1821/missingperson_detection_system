@@ -27,21 +27,21 @@ label_encoder = None
 
 def get_face_detector_and_embedder():
     global detector, embedder, model, label_encoder
-
     if detector is None or embedder is None:
+        # Lazy import
+        from mtcnn import MTCNN
+        from keras_facenet import FaceNet
         detector = MTCNN()
         embedder = FaceNet()
-        logger.info("Detector and embedder loaded.")
+        print("Detector and embedder loaded.")
 
     if model is None or label_encoder is None:
-        model_path = os.path.join(MODEL_DIR, "voting_classifier.pkl")
-        label_encoder_path = os.path.join(MODEL_DIR, "label_encoder.pkl")
-
-        with open(model_path, "rb") as f:
+        import pickle
+        with open("model/face_detection_model.pkl", "rb") as f:
             model = pickle.load(f)
-        with open(label_encoder_path, "rb") as f:
+        with open("model/label_encoder.pkl", "rb") as f:
             label_encoder = pickle.load(f)
-        logger.info("Trained model and label encoder loaded.")
+        print("Trained model and label encoder loaded.")
 
     return detector, embedder, model, label_encoder
 
